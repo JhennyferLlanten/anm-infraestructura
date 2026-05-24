@@ -1,0 +1,142 @@
+version: '3.8'
+
+networks:
+  dmz:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.168.10.0/24
+  servidores:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.168.20.0/24
+  admin:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.168.30.0/24
+
+volumes:
+  db_data:
+  grafana_data:
+  prometheus_data:
+  loki_data:
+  web_logs:
+
+services:
+
+  web:
+    build: ./servicios/web
+    container_name: anm-web
+    restart: always
+    ports:
+      - "80:3001"
+    environment:
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASS: ${DB_PASS}
+    depends_on:
+      - db
+    volumes:
+      - web_logs:/app/logs
+    networks:
+      - dmz
+      - servidores
+
+  db:
+    image: postgres:15
+    container_name: anm-db
+    restart: always
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASS}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./servicios/db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      servidores:
+        ipv4_address: 192.168.20.10
+
+  ntp:
+    image: cturra/ntp:latest
+    container_name: anm-ntp
+    restart: always
+    cap_add:
+      - SYS_TIME
+    networks:
+      servidores:
+        ipv4_address: 192.168.20.20
+
+  samba:
+    image: dperson/samba:latest
+    container_name: anm-files
+    restart: always
+    command: >
+      -u "anm-admin;Anm2026*"
+      -s "documentos;/mount;yes;no;no;anm-admin"
+    ports:
+      - "445:445"
+    volumes:
+      - ./servicios/samba:/mount
+    networks:
+      servidores:
+        ipv4_address: 192.168.20.30
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: anm-node-exporter
+    restart: always
+    networks:
+      - admin
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: anm-prometheus
+    restart: always
+    volumes:
+      - ./monitoreo/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - admin
+
+  loki:
+    image: grafana/loki:latest
+    container_name: anm-loki
+    restart: always
+    ports:
+      - "3100:3100"
+    volumes:
+      - loki_data:/loki
+      - ./monitoreo/loki-config.yml:/etc/loki/local-config.yaml
+    command: -config.file=/etc/loki/local-config.yaml
+    networks:
+      - admin
+
+  promtail:
+    image: grafana/promtail:latest
+    container_name: anm-promtail
+    restart: always
+    volumes:
+      - ./monitoreo/promtail-config.yml:/etc/promtail/config.yml
+      - web_logs:/app/logs:ro
+    command: -config.file=/etc/promtail/config.yml
+    networks:
+      - admin
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: anm-grafana
+    restart: always
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASS}
+    volumes:
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    networks:
+      - admin
+
